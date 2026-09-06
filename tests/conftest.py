@@ -269,6 +269,64 @@ VPN_NETWORKED = {
 }
 
 
+# Health messages that mean a download client is unreachable, which is a core
+# function of this stack, as opposed to everything else these endpoints report,
+# which is largely environmental (no indexers, no usenet provider, no real
+# trackers configured) and stays a warning instead. Keep this list short:
+# turning every health message into a failure would make the health tier
+# useless in a test environment shaped like that.
+DOWNLOAD_CLIENT_UNREACHABLE_SUBSTRINGS = (
+    # The exact failure #124 was filed over: a stale GLUETUN_SERVICES_IP left
+    # every arr unable to reach qBittorrent, and the test only warned about it.
+    "unable to communicate with qbittorrent",
+    # SABnzbd has the identical failure shape as qBittorrent, see #112.
+    "unable to communicate with sabnzbd",
+)
+
+
+def is_download_client_unreachable(message) -> bool:
+    """True when a servarr health message means a download client cannot be reached.
+
+    Everything else these endpoints report keeps warning rather than failing,
+    see test_arr_health_response_empty in test_services.py. A message that is
+    not a string, or missing entirely, is not a match rather than an error:
+    a malformed health payload should warn like any other unrecognized shape,
+    not blow up the whole tier.
+    """
+    if not isinstance(message, str):
+        return False
+    lowered = message.lower()
+    return any(
+        substring in lowered for substring in DOWNLOAD_CLIENT_UNREACHABLE_SUBSTRINGS
+    )
+
+
+def classify_arr_health_response(data: list) -> tuple[list, list]:
+    """Split a servarr health endpoint's response into (failures, warn_only).
+
+    `data` is the JSON list a health endpoint returns, each item normally a
+    dict with at least a `message` key. This is the actual classification
+    behind test_arr_health_response_empty, pulled out so it can be exercised
+    directly against a fabricated response instead of only through
+    is_download_client_unreachable. An item that is not a dict, or a dict with
+    no `message`, is malformed rather than a failure signal, so it goes to
+    warn_only unclassified instead of being stringified and matched against
+    the fail list, which could false positive on an unrelated message.
+    """
+    failures = []
+    warn_only = []
+    for item in data:
+        if not isinstance(item, dict) or "message" not in item:
+            warn_only.append(str(item))
+            continue
+        message = item["message"]
+        if is_download_client_unreachable(message):
+            failures.append(message)
+        else:
+            warn_only.append(message)
+    return failures, warn_only
+
+
 def env(key: str, default: str = "") -> str:
     return ENV.get(key, default) or default
 
